@@ -233,10 +233,10 @@ class FreshFrameReader:
 
 def build_ffmpeg_command(config, width, height, fps):
     return [
-        "ffmpeg", "-y",
+        "/usr/bin/ffmpeg", "-y",
         "-f", "rawvideo", "-pix_fmt", "bgr24",
         "-s", f"{width}x{height}", "-r", str(fps), "-i", "-",
-        "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+        "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
         "-b:v", config.target_bitrate, "-maxrate", config.target_bitrate,
         "-bufsize", config.target_bitrate,
         "-pix_fmt", "yuv420p", "-f", "flv", config.rtmp_out,
