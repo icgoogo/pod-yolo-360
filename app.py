@@ -280,7 +280,7 @@ try:
             print(
                 f"[{MODE} #{frame_count}] Total: {t_total_ms:.1f}ms (Decode: {t_decode_ms:.1f}ms | "
                 f"Infer: {t_infer_ms:.1f}ms | Blur: {t_blur_ms:.1f}ms | Enc: {t_encode_ms:.1f}ms) | "
-                f"FPS: {current_fps:.1f} | f"Camera FPS: {cam_fps:.1f} | Dropped: {dropped} | VRAM: {vram_mb:.1f}MB"
+                f"FPS: {current_fps:.1f} | Camera FPS: {cam_fps:.1f} | Dropped: {dropped} | VRAM: {vram_mb:.1f}MB"
             )
 
 except KeyboardInterrupt:
