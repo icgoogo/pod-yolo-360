@@ -4,11 +4,9 @@ import time
 import threading
 import subprocess
 import cv2
-import numpy as np
 import torch
 import psutil
 
-# Configuration via Environment Variables
 RTSP_IN = os.getenv("RTSP_URL", "rtsp://localhost:8554/live/theta")
 RTMP_OUT = os.getenv("OUT_RTMP", "rtmp://localhost:1935/live/theta_blurred")
 MODEL_PATH = os.getenv("YOLO_MODEL", "yolov8n-face.pt")
@@ -19,16 +17,15 @@ TARGET_BITRATE = os.getenv("OUT_BITRATE", "16M")
 
 # Dynamic Detection & Bounding Box Controls
 CONF_THRESH = float(os.getenv("CONF_THRESH", "0.30"))     # Confidence threshold (0.10 - 0.90)
-BOX_MARGIN = float(os.getenv("BOX_MARGIN", "0.15"))       # Safety padding around face (15%)
+BOX_MARGIN = float(os.getenv("BOX_MARGIN", "0.18"))       # Safety padding around face (18%)
 HEAD_RATIO = float(os.getenv("HEAD_RATIO", "0.0"))        # 0.0 = Direct Face Model; >0.0 for person model fallback
 
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-TARGET_GPU = os.getenv("CUDA_VISIBLE_DEVICES", "0")
 
 if torch.cuda.is_available():
     DEVICE = 0  # Index relative to container's visible GPU
     gpu_name = torch.cuda.get_device_name(0)
-    print(f"[+] CUDA Verified! Running on GPU: {gpu_name} (Device ID: {TARGET_GPU})")
+    print(f"[+] CUDA Verified! Running on GPU: {gpu_name}")
 else:
     DEVICE = "cpu"
     print("[!] WARNING: CUDA is NOT available. Falling back to CPU!")
@@ -131,6 +128,9 @@ ffmpeg_cmd = [
     "-",
     "-c:v",
     "libx264",
+    "-b:v", TARGET_BITRATE, 
+    "-maxrate", TARGET_BITRATE,
+    "-bufsize", TARGET_BITRATE,
     "-preset",
     "ultrafast",
     "-tune",
@@ -165,7 +165,6 @@ def adjust_box(box, margin=BOX_MARGIN, head_ratio=HEAD_RATIO, max_w=width, max_h
         min(max_w, x2 + dx),
         min(max_h, y2 + dy),
     ]
-
 
 # 4. Ultra-Fast ROI Pixelation (10x faster than GaussianBlur)
 def apply_pixelate(frame, box):
@@ -213,28 +212,27 @@ try:
         # Step B: Run inference every 2nd frame (if in YOLO mode)
         t_infer_ms = 0.0
         if MODE == "YOLO":
-            if frame_count % 2 == 0:
-                if DEVICE != "cpu":
-                    torch.cuda.synchronize()
-                t1 = time.perf_counter()
+            if DEVICE != "cpu":
+                torch.cuda.synchronize()
+            t1 = time.perf_counter()
 
-                results = model.predict(
-                    work_frame,
-                    imgsz=IMGSZ,
-                    conf=CONF_THRESH,
-                    classes=[0],
-                    device=DEVICE,
-                    verbose=False,
-                )
+            results = model.predict(
+                work_frame,
+                imgsz=IMGSZ,
+                conf=CONF_THRESH,
+                classes=[0],
+                device=DEVICE,
+                verbose=False,
+            )
 
-                if DEVICE != "cpu":
-                    torch.cuda.synchronize()
-                t_infer_ms = (time.perf_counter() - t1) * 1000.0
+            if DEVICE != "cpu":
+                torch.cuda.synchronize()
+            t_infer_ms = (time.perf_counter() - t1) * 1000.0
 
-                last_boxes = []
-                if len(results) > 0 and results[0].boxes is not None:
-                    raw_boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
-                    last_boxes = [adjust_box(b) for b in raw_boxes]
+            last_boxes = []
+            if len(results) > 0 and results[0].boxes is not None:
+                raw_boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
+                last_boxes = [adjust_box(b) for b in raw_boxes]
 
         # Step C: Apply pixelation using adjusted bounding boxes (if in YOLO mode)
         t2 = time.perf_counter()
