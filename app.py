@@ -68,7 +68,6 @@ class PipelineConfig:
             stream_fps=float(os.getenv("STREAM_FPS", "30.0")),
         )
 
-
 def local_model_path(value, variable):
     """Reject missing weights before YOLO can attempt an automatic download."""
     path = Path(value).expanduser()
@@ -145,21 +144,16 @@ class PIIAnonymizer:
 
 
 def apply_pii_blur(frame, blur_boxes, kernel_size=51):
-    """Blur valid, clamped PII regions in place with a heavy Gaussian kernel."""
-    if not isinstance(kernel_size, int) or kernel_size < 1:
-        raise ValueError("kernel_size must be a positive integer")
     h, w = frame.shape[:2]
-    k = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
     for box in blur_boxes:
-        if not np.isfinite(box).all():
-            continue
         x1, y1, x2, y2 = [int(v) for v in box]
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(w, x2), min(h, y2)
         if (x2 - x1) < 2 or (y2 - y1) < 2:
             continue
         roi = frame[y1:y2, x1:x2]
-        frame[y1:y2, x1:x2] = cv2.GaussianBlur(roi, (k, k), 30)
+        small = cv2.resize(roi, (8, 8), interpolation=cv2.INTER_NEAREST)
+        frame[y1:y2, x1:x2] = cv2.resize(small, (x2 - x1, y2 - y1), interpolation=cv2.INTER_NEAREST)
     return frame
 
 
@@ -205,7 +199,12 @@ class FreshFrameReader:
                         self.dropped_frames += 1
                     self.frame = frame
                     if dt > 0:
-                        self.incoming_fps = 1.0 / dt
+                        inst_fps = 1.0 / dt
+                        self.incoming_fps = (
+                            (0.9 * self.incoming_fps + 0.1 * inst_fps)
+                            if self.incoming_fps > 0
+                            else inst_fps
+                        ) 
                     self.new_frame = True
                     self.condition.notify_all()
         finally:
@@ -220,9 +219,11 @@ class FreshFrameReader:
             while self.running and not self.new_frame:
                 self.condition.wait(timeout=0.1)
             if not self.new_frame:
-                return False, None, self.dropped_frames, self.incoming_fps
+                return False, None, 0, self.incoming_fps
             self.new_frame = False
-            return True, self.frame, self.dropped_frames, self.incoming_fps
+            dropped_delta = self.dropped_frames
+            self.dropped_frames = 0
+            return True, self.frame, dropped_delta, self.incoming_fps
 
     def release(self):
         with self.condition:
@@ -280,6 +281,8 @@ def main():
     pipe = None
     telemetry = None
     telemetry_buffer = []
+    process = psutil.Process()
+    process.cpu_percent(interval=None)
     try:
         print(f"[*] Connecting to stream: {config.rtsp_in}")
         reader = FreshFrameReader(config.rtsp_in)
@@ -300,8 +303,6 @@ def main():
             "t_encode_ms,t_total_ms,fps,cam_fps,boxes_count,dropped_frames,vram_mb,cpu_pct,ram_mb\n"
         )
         frame_count = 0
-        prev_time = time.perf_counter()
-        process = psutil.Process()
         while True:
             loop_start = time.perf_counter()
             t0 = time.perf_counter()
@@ -335,9 +336,8 @@ def main():
             t_encode_ms = (time.perf_counter() - t3) * 1000.0
             loop_end = time.perf_counter()
             t_total_ms = (loop_end - loop_start) * 1000.0
-            current_fps = 1.0 / (loop_end - prev_time) if loop_end > prev_time else fps
-            prev_time = loop_end
-            vram_mb = torch.cuda.memory_allocated(0) / (1024 * 1024) if device != "cpu" else 0.0
+            current_fps = 1000.0 / t_total_ms if t_total_ms > 0 else fps
+            vram_mb = torch.cuda.memory_reserved(0) / (1024 * 1024) if device != "cpu" else 0.0
             cpu_pct = process.cpu_percent()
             ram_mb = process.memory_info().rss / (1024 * 1024)
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
