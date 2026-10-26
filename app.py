@@ -20,6 +20,7 @@ MODEL_PATH = (
     if MODE == "YUNET"
     else os.getenv("YOLO_MODEL", "yolov8n-face.pt")
 )
+# 2:1 rectangle
 IMGSZ = int(os.getenv("YUNET_IMGSZ" if MODE == "YUNET" else "YOLO_IMGSZ", "640"))
 if IMGSZ <= 0:
     sys.exit("[-] Model image size must be positive.")
@@ -28,7 +29,7 @@ TELEMETRY_CSV = os.getenv("TELEMETRY_CSV", "pipeline_telemetry.csv")
 TARGET_BITRATE = os.getenv("OUT_BITRATE", "16M")
 
 # Dynamic Detection & Bounding Box Controls
-CONF_THRESH = float(os.getenv("CONF_THRESH", "0.30"))  # Confidence threshold (0.10 - 0.90)
+CONF_THRESH = float(os.getenv("CONF_THRESH", "0.18"))  # Confidence threshold (0.10 - 0.90)
 BOX_MARGIN = float(os.getenv("BOX_MARGIN", "0.18"))    # Safety padding around face (18%)
 HEAD_RATIO = float(os.getenv("HEAD_RATIO", "0.0"))     # 0.0 = Direct Face Model; >0.0 for person fallback
 
@@ -53,7 +54,7 @@ else:
     print("[!] WARNING: CUDA unavailable. Falling back to CPU!")
 
 print(
-    f"[CONFIG] Mode: {MODE} | Model: {MODEL_PATH} | ImgSz: {IMGSZ} | "
+    f"[CONFIG] Mode: {MODE} | Model: {MODEL_PATH} | ImgSz height: {IMGSZ} | "
     f"Conf: {CONF_THRESH} | Margin: {BOX_MARGIN*100:.0f}% | HeadRatio: {HEAD_RATIO*100:.0f}%"
 )
 
@@ -275,7 +276,7 @@ try:
 
             results = model.predict(
                 work_frame,
-                imgsz=IMGSZ,
+                imgsz=(IMGSZ, IMGSZ*2),
                 conf=CONF_THRESH,
                 classes=[0],
                 device=DEVICE,
