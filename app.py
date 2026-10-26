@@ -77,6 +77,7 @@ class FreshFrameReader:
         self.lock = threading.Lock()
         self.dropped_frames = 0
         self.incoming_fps = 0.0
+        self.latest_decode_ms = 0.0
         self.last_frame_time = time.perf_counter()
 
         self.thread = threading.Thread(target=self._update, daemon=True)
@@ -84,7 +85,9 @@ class FreshFrameReader:
 
     def _update(self):
         while self.running:
+            t_dec_start = time.perf_counter() 
             ret, frame = self.cap.read()
+            t_decode_ms = (time.perf_counter() - t_dec_start) * 1000.0 
             if not ret:
                 self.running = False
                 break
@@ -97,6 +100,7 @@ class FreshFrameReader:
                 if self.new_frame:
                     self.dropped_frames += 1
                 self.frame = frame
+                self.latest_decode_ms = t_decode_ms
                 if dt > 0:
                     inst_fps = 1.0 / dt
                     # Smooth camera FPS metric with Exponential Moving Average
@@ -110,11 +114,11 @@ class FreshFrameReader:
     def read_latest(self):
         with self.lock:
             if self.frame is None:
-                return False, None, 0, 0.0
+                return False, None, 0, 0.0, 0.0
             self.new_frame = False
             dropped_delta = self.dropped_frames
             self.dropped_frames = 0  # Reset delta counter after reading
-            return self.running, self.frame, dropped_delta, self.incoming_fps
+            return self.running, self.frame, dropped_delta, self.incoming_fps, self.latest_decode_ms
 
     def release(self):
         self.running = False
@@ -127,7 +131,7 @@ reader = FreshFrameReader(RTSP_IN)
 # Wait for first valid frame safely
 first_frame = None
 while first_frame is None:
-    _, first_frame, _, _ = reader.read_latest()
+    _, first_frame, _, _, _ = reader.read_latest()
     time.sleep(0.02)
 
 height, width = first_frame.shape[:2]
@@ -258,12 +262,10 @@ try:
         loop_start = time.perf_counter()
 
         # Step A: Capture & Decode
-        t0 = time.perf_counter()
-        success, frame, dropped, cam_fps = reader.read_latest()
+        success, frame, dropped, cam_fps, t_decode_ms = reader.read_latest()
         if not success or frame is None:
             print("[-] Stream ended. Exiting...")
             break
-        t_decode_ms = (time.perf_counter() - t0) * 1000.0
 
         work_frame = frame.copy()
 
