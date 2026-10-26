@@ -319,8 +319,11 @@ try:
         # Step C: Apply pixelation using adjusted face bounding boxes
         t2 = time.perf_counter()
         if MODE in {"YOLO", "YUNET"}:
+            box_n = 0;
             for box in last_boxes:
                 work_frame = apply_pixelate(work_frame, box)
+                print(f"box {box_n} detected : {box} in frame: {frame_count}")
+                box_n += 1
         t_blur_ms = (time.perf_counter() - t2) * 1000.0
 
         # Step D: Pipe out to FFmpeg
