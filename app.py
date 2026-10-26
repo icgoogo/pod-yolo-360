@@ -154,6 +154,7 @@ else:
 
 print(f"[+] Connected! Resolution: {width}x{height} @ {fps:.1f} FPS (Raw reported: {raw_fps})")
 
+scale = IMGSZ / height
 input_w, input_h = IMGSZ * 2, IMGSZ 
 
 # 2. Load Model & FFmpeg Pipe
