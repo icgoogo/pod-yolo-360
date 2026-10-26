@@ -322,7 +322,8 @@ try:
             box_n = 0;
             for box in last_boxes:
                 work_frame = apply_pixelate(work_frame, box)
-                print(f"box {box_n} detected : {box} in frame: {frame_count}")
+                if box_n != 0:   
+                    print(f"box {box_n} detected : {box} in frame: {frame_count}")
                 box_n += 1
         t_blur_ms = (time.perf_counter() - t2) * 1000.0
 
