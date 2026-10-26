@@ -1,49 +1,93 @@
 # pod-yolo-360
 
-Read RTSP or RTMP video from MediaMTX, detect PII with local YOLO weights,
-apply Gaussian blur, and publish the processed video to MediaMTX over RTMP.
-Inference uses CUDA device 0 when available, with a CPU fallback.
+RTSP face pixelation with YOLO or YuNet, streamed to RTMP through FFmpeg.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `APPROACH` | `C` | `A`: estimated heads from people; `B`: faces; `C`: faces plus estimated heads for people without a detected face |
-| `PERSON_MODEL_PATH` | `yolo11n.pt` | Local person weights; class 0 only; required for A/C |
-| `FACE_MODEL_PATH` | `yolov8n-face.pt` | Local face weights; required for B/C |
-| `PLATE_MODEL_PATH` | empty | Local plate weights; empty disables plates; enabled in every approach when set |
-| `HEAD_RATIO` | `0.20` | Top fraction of the person box used for head estimation, in `(0, 1]` |
-| `CONF_THRESH` | `0.35` | Detection confidence threshold, in `[0, 1]` |
-| `BLUR_KERNEL` | `51` | Positive Gaussian kernel size; even values round up to the next odd value; sigma is 30 |
-| `RTSP_URL` | `rtsp://localhost:8554/live/theta` | Input stream URL (RTSP or RTMP) |
-| `OUT_RTMP` | `rtmp://localhost:1935/live/theta_blurred` | Processed output URL |
-| `YOLO_IMGSZ` | `640` | Detector inference image size |
-| `STREAM_FPS` | `30.0` | Output FPS when input metadata is invalid |
-| `OUT_BITRATE` | `16M` | FFmpeg target and maximum video bitrate |
-| `TELEMETRY_CSV` | `pipeline_telemetry.csv` | Per-frame timing and resource metrics; the `mode` column records A/B/C |
+## Select YuNet
 
-Supply the required `.pt` files before starting. All selected model paths are
-validated locally before YOLO is loaded or the stream is opened; missing or
-invalid weights stop startup instead of triggering a download or silently
-disabling anonymization. Plate weights are not included in this repository.
+The existing YOLO behavior remains the default. To use YuNet, add these options
+to your existing `podman run` command **before the image name**:
 
-Install [requirements.txt](./requirements.txt), a compatible PyTorch runtime,
-and FFmpeg on `PATH`, then run `python app.py`. The [Dockerfile](./Dockerfile)
-provides the CUDA runtime and FFmpeg and copies local `.pt` weights into the image.
-For example, in PowerShell:
-
-```powershell
-$env:APPROACH = "C"
-$env:PERSON_MODEL_PATH = "yolo11n.pt"
-$env:FACE_MODEL_PATH = "yolov8n-face.pt"
-$env:PLATE_MODEL_PATH = "" # Set to a local plate weight file to enable plate detection.
-$env:RTSP_URL = "rtsp://localhost:8554/live/theta"
-$env:OUT_RTMP = "rtmp://localhost:1935/live/theta_blurred"
-python app.py
+```text
+-e ANONYMIZATION_MODE=YUNET -e YUNET_IMGSZ=640 -e CONF_THRESH=0.6
 ```
 
-`APPROACH` replaces the old `ANONYMIZATION_MODE`/`YOLO_MODEL` configuration.
-Each output frame receives fresh inference; slow processing drops older input
-frames to keep latency down. The output carries video only. The process exits
-when input ends or publishing fails; restart it to reconnect.
+The included [YuNet model](https://huggingface.co/opencv/face_detection_yunet)
+is `face_detection_yunet_2023mar.onnx` (about 228 KiB), copied into the image by
+the [Dockerfile](./Dockerfile). To download it again from the repository root:
 
-Run `python -m unittest -v test_app` for offline regression tests. These use real
-NumPy/OpenCV image processing and mock model inference, CUDA, and streaming I/O.
+```sh
+curl -fL -o face_detection_yunet_2023mar.onnx https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx
+```
+
+On Windows PowerShell, use `curl.exe` for that command.
+
+YuNet runs on **CPU** through OpenCV DNN. The pip OpenCV wheels do not provide
+CUDA inference, even inside the existing CUDA/PyTorch image. Use OpenCV 4.8 or
+newer for this model; the existing unpinned OpenCV requirement installs a current
+version on a fresh dependency build. No new Python dependencies are needed.
+
+`YUNET_IMGSZ` limits the longest input side while preserving aspect ratio.
+Detections are mapped back to the full video resolution before applying the
+existing `BOX_MARGIN` and pixelation. `HEAD_RATIO` is ignored for YuNet because
+it already detects faces. For 360 video, try `YUNET_IMGSZ=1280` if distant faces
+are missed; this increases CPU work. The example confidence of `0.6` is a
+starting point to tune against your footage; the code's default remains `0.30`.
+`YUNET_MODEL` can override the model path. Capture, encoding, and CSV columns
+remain the same, with `YUNET` recorded in the mode column.
+
+## Rebuild using the existing Podman image tag
+
+Run these on the machine where Podman and your current image are installed.
+Replace the uppercase placeholders with your actual values.
+
+1. Find your existing image tag, container name, and **old image ID**. Save the
+   old ID before building, so you can remove that specific version afterward:
+
+   ```sh
+   podman images --no-trunc
+   podman ps -a
+   ```
+
+2. From this repository directory, build with the **same repository and tag**:
+
+   ```sh
+   podman build --layers -t YOUR_EXISTING_IMAGE:TAG .
+   ```
+
+   Keep the [requirements](./requirements.txt) and base image unchanged to reuse
+   the large dependency layers. Avoid `--no-cache`. The YuNet changes only affect
+   the small application/model layers after dependency installation.
+
+3. Recreate the container using your original `podman run` command, adding
+   `--replace`, keeping the same `--name`, and setting the YuNet options above.
+   Keep your existing ports/network, volume mounts, stream URLs, and other flags.
+   This interrupts the running stream and replaces the container; preserve any
+   needed files in its writable layer first. Files in mounted storage persist.
+   Merely restarting the old container does **not** load the rebuilt image.
+   For example, on a Linux Podman host with MediaMTX on localhost:
+
+   ```sh
+   podman run -d --replace --name YOUR_EXISTING_CONTAINER --network host -v theta-output:/app/output -e TELEMETRY_CSV=/app/output/pipeline_telemetry.csv -e ANONYMIZATION_MODE=YUNET -e YUNET_IMGSZ=640 -e CONF_THRESH=0.6 YOUR_EXISTING_IMAGE:TAG
+   podman logs --tail 50 YOUR_EXISTING_CONTAINER
+   ```
+
+   Adapt the example to your existing run configuration; it uses a named volume
+   to persist telemetry and the application's default local RTSP/RTMP URLs.
+
+4. After confirming the new container works, remove the recorded **old** image:
+
+   ```sh
+   podman rmi OLD_IMAGE_ID
+   podman system df
+   ```
+
+   Skip removal if the build reused the same image ID. If another container still
+   references the old image, Podman will refuse removal; inspect that container
+   rather than forcing removal. Shared layers remain available to the new image.
+
+Images are immutable: rebuilding moves the existing tag to a new image version;
+it cannot overwrite the old image in place. Cached layers avoid duplicating the
+large CUDA/PyTorch dependencies, but some temporary extra space is still needed.
+The displayed image size includes shared layers and is not all additional disk
+usage. Build cache may retain layers after image removal. Avoid broad
+`podman system prune -a --volumes` cleanup: it can remove unrelated data.

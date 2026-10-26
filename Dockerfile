@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 COPY *.pt .
+COPY face_detection_yunet_2023mar.onnx face_detection_yunet.LICENSE* ./
 
 VOLUME ["/app/output"]
 
