@@ -18,7 +18,7 @@ if MODE not in {"YOLO", "YOLO-PERSON","YUNET", "PASSTHROUGH"}:
 model_path = "yolov8n-face.pt"
 if MODE == "YUNET":
     model_path = "face_detection_yunet_2023mar.onnx"
-else:
+elif MODE == "YOLO-PERSON":
     model_path = "yolo26n.pt"
 
 MODEL_PATH = os.getenv("MODEL", model_path)
@@ -34,8 +34,8 @@ TARGET_BITRATE = os.getenv("OUT_BITRATE", "16M")
 # Direct environment variable loading with defaults
 if MODE == "YOLO-PERSON":
     CONF_THRESH = float(os.getenv("CONF_THRESH", "0.2"))
-    BOX_MARGIN  = float(os.getenv("BOX_MARGIN", "0.01"))
-    HEAD_RATIO  = float(os.getenv("HEAD_RATIO", "0.30"))
+    BOX_MARGIN  = float(os.getenv("BOX_MARGIN", "0.001"))
+    HEAD_RATIO  = float(os.getenv("HEAD_RATIO", "0.35"))
 else:
     CONF_THRESH = float(os.getenv("CONF_THRESH", "0.2"))
     BOX_MARGIN  = float(os.getenv("BOX_MARGIN", "0.23"))
@@ -43,6 +43,7 @@ else:
 
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
+DEVICE = "cpu" 
 # Device verification
 if MODE == "YUNET":
     # Check if OpenCV DNN was compiled with CUDA support
@@ -153,6 +154,8 @@ else:
 
 print(f"[+] Connected! Resolution: {width}x{height} @ {fps:.1f} FPS (Raw reported: {raw_fps})")
 
+input_w, input_h = IMGSZ * 2, IMGSZ 
+
 # 2. Load Model & FFmpeg Pipe
 model = None
 if MODE in ["YOLO", "YOLO-PERSON"]:
@@ -167,7 +170,7 @@ elif MODE == "YUNET":
     model = cv2.FaceDetectorYN.create(
         MODEL_PATH,
         "",
-        (320, 320),
+        (input_w, input_h),
         CONF_THRESH,
         0.3,
         5000,
@@ -286,7 +289,7 @@ try:
 
             results = model.predict(
                 work_frame,
-                imgsz=(IMGSZ, IMGSZ*2),
+                imgsz=(input_h, input_w),
                 conf=CONF_THRESH,
                 classes=[0],
                 device=DEVICE,
@@ -304,38 +307,30 @@ try:
 
         elif MODE == "YUNET":
             t1 = time.perf_counter()
-            # Aspect ratio-preserving scaling up to IMGSZ (supports 320, 640, 1280, etc.)
-            scale = min(IMGSZ / width, IMGSZ / height, 1.0)
-            input_w, input_h = max(1, round(width * scale)), max(1, round(height * scale))
             detector_frame = cv2.resize(work_frame, (input_w, input_h)) if scale < 1.0 else work_frame
             
-            model.setInputSize((input_w, input_h))
             _, faces = model.detect(detector_frame)
             t_infer_ms = (time.perf_counter() - t1) * 1000.0
 
             last_boxes = []
             if faces is not None:
+                scale_x = width / input_w
+                scale_y = height / input_h
                 for face in faces:
                     x, y, w, h = face[:4]
-                    scale_x = width / input_w
-                    scale_y = height / input_h
                     box = [
                         int(x * scale_x),
                         int(y * scale_y),
                         int((x + w) * scale_x),
                         int((y + h) * scale_y),
                     ]
-                    last_boxes.append(adjust_box(box, head_ratio=0.0))
+                    last_boxes.append(adjust_box(box))
 
         # Step C: Apply pixelation using adjusted face bounding boxes
         t2 = time.perf_counter()
         if MODE in {"YOLO", "YUNET", "YOLO-PERSON"}:
-            box_n = 0;
             for box in last_boxes:
                 work_frame = apply_pixelate(work_frame, box)
-                if box_n != 0:   
-                    print(f"box {box_n} detected : {box} in frame: {frame_count}")
-                box_n += 1
         t_blur_ms = (time.perf_counter() - t2) * 1000.0
 
         # Step D: Pipe out to FFmpeg
@@ -376,7 +371,8 @@ try:
             print(
                 f"[{MODE} #{frame_count}] Total: {t_total_ms:.1f}ms (Decode: {t_decode_ms:.1f}ms | "
                 f"Infer: {t_infer_ms:.1f}ms | Blur: {t_blur_ms:.1f}ms | Enc: {t_encode_ms:.1f}ms) | "
-                f"FPS: {current_fps:.1f} | Camera FPS: {cam_fps:.1f} | Dropped: {dropped} | VRAM: {vram_mb:.1f}MB"
+                f"FPS: {current_fps:.1f} | Camera FPS: {cam_fps:.1f} | Dropped: {dropped} | VRAM: {vram_mb:.1f}MB |"
+                f"frame #{frame_count} has {len(last_boxes)}"
             )
 
 except KeyboardInterrupt:
