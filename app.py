@@ -11,17 +11,20 @@ import psutil
 # Configuration via Environment Variables
 RTSP_IN = os.getenv("RTSP_URL", "rtsp://localhost:8554/live/theta")
 RTMP_OUT = os.getenv("OUT_RTMP", "rtmp://localhost:1935/live/theta_blurred")
-MODE = os.getenv("ANONYMIZATION_MODE", "YOLO").upper()  # YOLO, YUNET, or PASSTHROUGH
-if MODE not in {"YOLO", "YUNET", "PASSTHROUGH"}:
+MODE = os.getenv("ANONYMIZATION_MODE", "YOLO").upper()  # YOLO, YOLO-PERSON, YUNET, or PASSTHROUGH
+if MODE not in {"YOLO", "YOLO-PERSON","YUNET", "PASSTHROUGH"}:
     sys.exit(f"[-] Unknown ANONYMIZATION_MODE: {MODE}")
 
-MODEL_PATH = (
-    os.getenv("YUNET_MODEL", "face_detection_yunet_2023mar.onnx")
-    if MODE == "YUNET"
-    else os.getenv("YOLO_MODEL", "yolov8n-face.pt")
-)
+model_path = "yolov8n-face.pt"
+if MODE == "YUNET":
+    model_path = "face_detection_yunet_2023mar.onnx"
+else:
+    model_path = "yolo26n.pt"
+
+MODEL_PATH = os.getenv("MODEL", model_path)
+
 # 2:1 rectangle
-IMGSZ = int(os.getenv("YUNET_IMGSZ" if MODE == "YUNET" else "YOLO_IMGSZ", "640"))
+IMGSZ = int(os.getenv("IMGSZ", "640"))
 if IMGSZ <= 0:
     sys.exit("[-] Model image size must be positive.")
 
@@ -147,7 +150,7 @@ print(f"[+] Connected! Resolution: {width}x{height} @ {fps:.1f} FPS (Raw reporte
 
 # 2. Load Model & FFmpeg Pipe
 model = None
-if MODE == "YOLO":
+if MODE in ["YOLO", "YOLO-PERSON"]:
     from ultralytics import YOLO
     print(f"[*] Loading YOLO model: {MODEL_PATH}")
     model = YOLO(MODEL_PATH)
@@ -271,7 +274,7 @@ try:
 
         # Step B: Run inference on each processed frame
         t_infer_ms = 0.0
-        if MODE == "YOLO":
+        if MODE in ["YOLO", "YOLO-PERSON"]:
             if DEVICE != "cpu":
                 torch.cuda.synchronize()
             t1 = time.perf_counter()
@@ -321,7 +324,7 @@ try:
 
         # Step C: Apply pixelation using adjusted face bounding boxes
         t2 = time.perf_counter()
-        if MODE in {"YOLO", "YUNET"}:
+        if MODE in {"YOLO", "YUNET", "YOLO-PERSON"}:
             box_n = 0;
             for box in last_boxes:
                 work_frame = apply_pixelate(work_frame, box)
