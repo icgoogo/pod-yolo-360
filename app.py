@@ -28,7 +28,6 @@ IMGSZ = int(os.getenv("IMGSZ", "640"))
 if IMGSZ <= 0:
     sys.exit("[-] Model image size must be positive.")
 
-TELEMETRY_CSV = os.getenv("TELEMETRY_CSV", "pipeline_telemetry.csv")
 TARGET_BITRATE = os.getenv("OUT_BITRATE", "16M")
 
 # Direct environment variable loading with defaults
@@ -144,6 +143,7 @@ while first_frame is None:
     time.sleep(0.02)
 
 height, width = first_frame.shape[:2]
+TELEMETRY_CSV = os.getenv("TELEMETRY_CSV", f"pipeline_telemetry_{width}x{height}_{IMGSZ}.csv")
 
 # SANITIZE FPS: OpenCV RTSP often returns 90000.0 (the 90kHz RTP clock rate)
 raw_fps = reader.cap.get(cv2.CAP_PROP_FPS)
