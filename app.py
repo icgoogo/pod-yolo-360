@@ -31,10 +31,15 @@ if IMGSZ <= 0:
 TELEMETRY_CSV = os.getenv("TELEMETRY_CSV", "pipeline_telemetry.csv")
 TARGET_BITRATE = os.getenv("OUT_BITRATE", "16M")
 
-# Dynamic Detection & Bounding Box Controls
-CONF_THRESH = float(os.getenv("CONF_THRESH", "0.18"))  # Confidence threshold (0.10 - 0.90)
-BOX_MARGIN = float(os.getenv("BOX_MARGIN", "0.18"))    # Safety padding around face (18%)
-HEAD_RATIO = float(os.getenv("HEAD_RATIO", "0.0"))     # 0.0 = Direct Face Model; >0.0 for person fallback
+# Direct environment variable loading with defaults
+if MODE == "YOLO-PERSON":
+    CONF_THRESH = float(os.getenv("CONF_THRESH", "0.2"))
+    BOX_MARGIN  = float(os.getenv("BOX_MARGIN", "0.01"))
+    HEAD_RATIO  = float(os.getenv("HEAD_RATIO", "0.30"))
+else:
+    CONF_THRESH = float(os.getenv("CONF_THRESH", "0.2"))
+    BOX_MARGIN  = float(os.getenv("BOX_MARGIN", "0.23"))
+    HEAD_RATIO  = float(os.getenv("HEAD_RATIO", "0.0"))
 
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
