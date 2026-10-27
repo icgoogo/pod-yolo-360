@@ -12,7 +12,7 @@ import psutil
 RTSP_IN = os.getenv("RTSP_URL", "rtsp://localhost:8554/live/theta")
 RTMP_OUT = os.getenv("OUT_RTMP", "rtmp://localhost:1935/live/theta_blurred")
 MODE = os.getenv("ANONYMIZATION_MODE", "YOLO").upper()  # YOLO, YOLO-PERSON, YUNET, or PASSTHROUGH
-if MODE not in {"YOLO", "YOLO-PERSON","YUNET", "PASSTHROUGH"}:
+if MODE not in {"YOLO", "YOLO-PERSON", "YUNET", "PASSTHROUGH"}:
     sys.exit(f"[-] Unknown ANONYMIZATION_MODE: {MODE}")
 
 model_path = "yolov8n-face.pt"
@@ -41,7 +41,6 @@ else:
     HEAD_RATIO  = float(os.getenv("HEAD_RATIO", "0.0"))
 
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-
 DEVICE = "cpu" 
 # Device verification
 if MODE == "YUNET":
@@ -67,7 +66,7 @@ print(
 )
 
 
-# 1. Threaded Video Capture (Zero-Copy Socket Drain with drop tracking)
+# 1. Threaded Video Capture (Synchronized with Condition to avoid duplicate frame processing)
 class FreshFrameReader:
     def __init__(self, src):
         self.cap = cv2.VideoCapture(
@@ -80,9 +79,10 @@ class FreshFrameReader:
         ret, self.frame = self.cap.read()
         if not ret or self.frame is None:
             sys.exit(f"[-] Error: No initial frame received from {src}")
+            
         self.running = True
+        self.cond = threading.Condition()  # Condition lock for main loop synchronization
         self.new_frame = True
-        self.lock = threading.Lock()
         self.dropped_frames = 0
         self.incoming_fps = 0.0
         self.latest_decode_ms = 0.0
@@ -93,43 +93,53 @@ class FreshFrameReader:
 
     def _update(self):
         while self.running:
-            t_dec_start = time.perf_counter() 
+            t_dec_start = time.perf_counter()
             ret, frame = self.cap.read()
-            t_decode_ms = (time.perf_counter() - t_dec_start) * 1000.0 
+            t_decode_ms = (time.perf_counter() - t_dec_start) * 1000.0
             if not ret:
-                self.running = False
+                with self.cond:
+                    self.running = False
+                    self.cond.notify_all()
                 break
 
             now = time.perf_counter()
             dt = now - self.last_frame_time
             self.last_frame_time = now
 
-            with self.lock:
+            with self.cond:
                 if self.new_frame:
                     self.dropped_frames += 1
                 self.frame = frame
                 self.latest_decode_ms = t_decode_ms
                 if dt > 0:
                     inst_fps = 1.0 / dt
-                    # Smooth camera FPS metric with Exponential Moving Average
                     self.incoming_fps = (
                         (0.9 * self.incoming_fps + 0.1 * inst_fps)
                         if self.incoming_fps > 0
                         else inst_fps
                     )
                 self.new_frame = True
+                self.cond.notify_all()  # Wake up main thread waiting for fresh frame
 
-    def read_latest(self):
-        with self.lock:
-            if self.frame is None:
+    def read_latest(self, wait_for_fresh=True):
+        """Reads the latest frame. If wait_for_fresh=True, blocks until a NEW frame arrives."""
+        with self.cond:
+            if wait_for_fresh:
+                while not self.new_frame and self.running:
+                    self.cond.wait(timeout=0.1)
+                    
+            if not self.running or self.frame is None:
                 return False, None, 0, 0.0, 0.0
+                
             self.new_frame = False
             dropped_delta = self.dropped_frames
-            self.dropped_frames = 0  # Reset delta counter after reading
+            self.dropped_frames = 0
             return self.running, self.frame, dropped_delta, self.incoming_fps, self.latest_decode_ms
 
     def release(self):
-        self.running = False
+        with self.cond:
+            self.running = False
+            self.cond.notify_all()
         self.cap.release()
 
 
@@ -139,7 +149,7 @@ reader = FreshFrameReader(RTSP_IN)
 # Wait for first valid frame safely
 first_frame = None
 while first_frame is None:
-    _, first_frame, _, _, _ = reader.read_latest()
+    _, first_frame, _, _, _ = reader.read_latest(wait_for_fresh=False)
     time.sleep(0.02)
 
 height, width = first_frame.shape[:2]
@@ -155,7 +165,7 @@ else:
 print(f"[+] Connected! Resolution: {width}x{height} @ {fps:.1f} FPS (Raw reported: {raw_fps})")
 
 scale = IMGSZ / height
-input_w, input_h = IMGSZ * 2, IMGSZ 
+input_w, input_h = IMGSZ * 2, IMGSZ
 
 # 2. Load Model & FFmpeg Pipe
 model = None
@@ -273,8 +283,8 @@ try:
     while True:
         loop_start = time.perf_counter()
 
-        # Step A: Capture & Decode
-        success, frame, dropped, cam_fps, t_decode_ms = reader.read_latest()
+        # Step A: Capture & Decode (Blocks until a fresh unique frame arrives)
+        success, frame, dropped, cam_fps, t_decode_ms = reader.read_latest(wait_for_fresh=True)
         if not success or frame is None:
             print("[-] Stream ended. Exiting...")
             break
@@ -372,7 +382,7 @@ try:
             print(
                 f"[{MODE} #{frame_count}] Total: {t_total_ms:.1f}ms (Decode: {t_decode_ms:.1f}ms | "
                 f"Infer: {t_infer_ms:.1f}ms | Blur: {t_blur_ms:.1f}ms | Enc: {t_encode_ms:.1f}ms) | "
-                f"FPS: {current_fps:.1f} | Camera FPS: {cam_fps:.1f} | Dropped: {dropped} | VRAM: {vram_mb:.1f}MB |"
+                f"FPS: {current_fps:.1f} | Camera FPS: {cam_fps:.1f} | Dropped: {dropped} | VRAM: {vram_mb:.1f}MB | "
                 f"frame #{frame_count} has {len(last_boxes)}"
             )
 
