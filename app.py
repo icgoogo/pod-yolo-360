@@ -84,9 +84,12 @@ class FreshFrameReader:
         self.cond = threading.Condition()  # Condition lock for main loop synchronization
         self.new_frame = True
         self.dropped_frames = 0
-        self.incoming_fps = 0.0
         self.latest_decode_ms = 0.0
-        self.last_frame_time = time.perf_counter()
+
+        # Windowed Camera Ingest FPS variables
+        self.cam_window_frames = 0 
+        self.cam_window_start = time.perf_counter()
+        self.cam_fps_window = 30.0 
 
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
@@ -103,21 +106,20 @@ class FreshFrameReader:
                 break
 
             now = time.perf_counter()
-            dt = now - self.last_frame_time
-            self.last_frame_time = now
 
             with self.cond:
                 if self.new_frame:
                     self.dropped_frames += 1
                 self.frame = frame
                 self.latest_decode_ms = t_decode_ms
-                if dt > 0:
-                    inst_fps = 1.0 / dt
-                    self.incoming_fps = (
-                        (0.9 * self.incoming_fps + 0.1 * inst_fps)
-                        if self.incoming_fps > 0
-                        else inst_fps
-                    )
+
+                # Calculate windowed camera ingest FPS over rolling ~1 second window
+                self.cam_window_frames += 1
+                elapsed_cam = now - self.cam_window_start
+                if elapsed_cam >= 1.0:
+                    self.cam_fps_window = self.cam_window_frames / elapsed_cam
+                    self.cam_window_frames = 0
+                    self.cam_window_start = now 
                 self.new_frame = True
                 self.cond.notify_all()  # Wake up main thread waiting for fresh frame
 
@@ -134,7 +136,7 @@ class FreshFrameReader:
             self.new_frame = False
             dropped_delta = self.dropped_frames
             self.dropped_frames = 0
-            return self.running, self.frame, dropped_delta, self.incoming_fps, self.latest_decode_ms
+            return self.running, self.frame, dropped_delta, self.cam_fps_window, self.latest_decode_ms
 
     def release(self):
         with self.cond:
@@ -279,15 +281,22 @@ last_boxes = []
 process = psutil.Process()
 process.cpu_percent(interval=None)  # Initialize baseline CPU percentage timer
 
+# Windowed Throughput Variables (Main Pipeline)
+WINDOW_SIZE = 30  # Compute rolling throughput every 30 frames
+window_start_time = time.perf_counter()
+window_frame_counter = 0
+pipeline_fps_window = float(fps) 
+
 try:
     while True:
-        loop_start = time.perf_counter()
 
-        # Step A: Capture & Decode (Blocks until a fresh unique frame arrives)
+        # Step A: Capture & Decode (wait until a fresh unique frame arrives)
         success, frame, dropped, cam_fps, t_decode_ms = reader.read_latest(wait_for_fresh=True)
         if not success or frame is None:
             print("[-] Stream ended. Exiting...")
             break
+
+        loop_start = time.perf_counter()
 
         work_frame = frame.copy()
 
@@ -357,7 +366,15 @@ try:
         t_total_ms = (loop_end - loop_start) * 1000.0
 
         # Smooth processing FPS calculated directly from total loop duration
-        current_fps = 1000.0 / t_total_ms if t_total_ms > 0 else fps
+        compute_capacity_fps = 1000.0 / t_total_ms if t_total_ms > 0 else fps
+
+        # TWEAK 2: Windowed Wall-Clock Throughput FPS (Sustained real-world pipeline throughput)
+        window_frame_counter += 1
+        elapsed_window = loop_end - window_start_time
+        if window_frame_counter >= WINDOW_SIZE:
+            pipeline_fps_window = window_frame_counter / elapsed_window if elapsed_window > 0 else fps
+            window_frame_counter = 0
+            window_start_time = loop_end 
 
         # Accurate reserved VRAM tracking
         vram_mb = torch.cuda.memory_reserved(0) / (1024 * 1024) if torch.cuda.is_available() else 0.0
@@ -367,7 +384,7 @@ try:
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         telemetry_buffer.append(
             f"{ts},{frame_count},{MODE},{IMGSZ},{t_decode_ms:.2f},{t_infer_ms:.2f},{t_blur_ms:.2f},"
-            f"{t_encode_ms:.2f},{t_total_ms:.2f},{current_fps:.1f},{cam_fps:.1f},{len(last_boxes)},"
+            f"{t_encode_ms:.2f},{t_total_ms:.2f},{pipeline_fps_window:.1f},{cam_fps:.1f},{len(last_boxes)},"
             f"{dropped},{vram_mb:.1f},{cpu_pct:.1f},{ram_mb:.1f}\n"
         )
 
@@ -380,9 +397,10 @@ try:
 
         if frame_count % 90 == 0:
             print(
-                f"[{MODE} #{frame_count}] Total: {t_total_ms:.1f}ms (Decode: {t_decode_ms:.1f}ms | "
-                f"Infer: {t_infer_ms:.1f}ms | Blur: {t_blur_ms:.1f}ms | Enc: {t_encode_ms:.1f}ms) | "
-                f"FPS: {current_fps:.1f} | Camera FPS: {cam_fps:.1f} | Dropped: {dropped} | VRAM: {vram_mb:.1f}MB | "
+                f"[{MODE} #{frame_count}] | Decode: {t_decode_ms:.1f}ms | Total: {t_total_ms:.1f}ms "
+                f"(Infer: {t_infer_ms:.1f}ms | Blur: {t_blur_ms:.1f}ms | Enc: {t_encode_ms:.1f}ms) | "
+                f"Throughput FPS: {pipeline_fps_window:.1f} (Compute Cap: {compute_capacity_fps:.1f}) | "
+                f"Camera FPS: {cam_fps:.1f} | Dropped: {dropped} | VRAM: {vram_mb:.1f}MB | "
                 f"frame #{frame_count} has {len(last_boxes)}"
             )
 
