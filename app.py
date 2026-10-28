@@ -40,10 +40,10 @@ else:
     BOX_MARGIN  = float(os.getenv("BOX_MARGIN", "0.23"))
     HEAD_RATIO  = float(os.getenv("HEAD_RATIO", "0.0"))
 
-# os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-    "rtsp_transport;tcp|hwaccel;cuda|video_codec;h264_cuvid|vsync;0"
-)
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+# os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+#     "rtsp_transport;tcp|hwaccel;cuda|video_codec;h264_cuvid|vsync;0"
+# )
 DEVICE = "cpu" 
 # Device verification
 if MODE == "YUNET":
@@ -72,20 +72,20 @@ print(
 # 1. Threaded Video Capture (Synchronized with Condition to avoid duplicate frame processing)
 class FreshFrameReader:
     def __init__(self, src):
-        # self.cap = cv2.VideoCapture(
-        #     src,
-        #     cv2.CAP_FFMPEG,
-        #     [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000],
-        # )
         self.cap = cv2.VideoCapture(
             src,
             cv2.CAP_FFMPEG,
-            [
-                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000,
-                cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000,
-                cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY,
-            ],
+            [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000],
         )
+        # self.cap = cv2.VideoCapture(
+        #     src,
+        #     cv2.CAP_FFMPEG,
+        #     [
+        #         cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000,
+        #         cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000,
+        #         cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY,
+        #     ],
+        # )
         if not self.cap.isOpened():
             sys.exit(f"[-] Error: Unable to open RTSP input at {src}")
         ret, self.frame = self.cap.read()
