@@ -15,6 +15,8 @@ MODE = os.getenv("ANONYMIZATION_MODE", "YOLO").upper()  # YOLO, YOLO-PERSON, YUN
 if MODE not in {"YOLO", "YOLO-PERSON", "YUNET", "RTDETR", "PASSTHROUGH"}:
     sys.exit(f"[-] Unknown ANONYMIZATION_MODE: {MODE}")
 
+model_path = "yolov8n-face.pt"
+
 if MODE == "YOLO":
     model_path = "yolov8n-face.pt"
 elif MODE == "YUNET":
@@ -28,6 +30,7 @@ elif MODE == "RTDETR":
     model_path = "rtdetr_v2_r18vd"
 
 MODEL_PATH = os.getenv("MODEL", model_path)
+
 
 # 2:1 rectangle
 IMGSZ = int(os.getenv("IMGSZ", "640"))
