@@ -380,7 +380,8 @@ try:
                     last_boxes.append(adjust_box(raw_box))
         elif MODE == "YUNET":
             t1 = time.perf_counter()
-            detector_frame = cv2.resize(work_frame, (input_w, input_h)) if scale < 1.0 else work_frame
+            detector_frame = cv2.resize(work_frame, (input_w, input_h))
+            # detector_frame = cv2.resize(work_frame, (input_w, input_h)) if scale < 1.0 else work_frame
             
             _, faces = model.detect(detector_frame)
             t_infer_ms = (time.perf_counter() - t1) * 1000.0
