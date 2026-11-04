@@ -4,3 +4,5 @@ onnxruntime-gpu
 shapely>=2.0.0
 psutil
 numpy<2.0.0
+transformers>=4.40.0
+torchvision
