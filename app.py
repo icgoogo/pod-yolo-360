@@ -11,15 +11,21 @@ import psutil
 # Configuration via Environment Variables
 RTSP_IN = os.getenv("RTSP_URL", "rtsp://localhost:8554/live/theta")
 RTMP_OUT = os.getenv("OUT_RTMP", "rtmp://localhost:1935/live/theta_blurred")
-MODE = os.getenv("ANONYMIZATION_MODE", "YOLO").upper()  # YOLO, YOLO-PERSON, YUNET, or PASSTHROUGH
-if MODE not in {"YOLO", "YOLO-PERSON", "YUNET", "PASSTHROUGH"}:
+MODE = os.getenv("ANONYMIZATION_MODE", "YOLO").upper()  # YOLO, YOLO-PERSON, YUNET, RTDETR, or PASSTHROUGH
+if MODE not in {"YOLO", "YOLO-PERSON", "YUNET", "RTDETR", "PASSTHROUGH"}:
     sys.exit(f"[-] Unknown ANONYMIZATION_MODE: {MODE}")
 
-model_path = "yolov8n-face.pt"
-if MODE == "YUNET":
+if MODE == "YOLO":
+    model_path = "yolov8n-face.pt"
+elif MODE == "YUNET":
     model_path = "face_detection_yunet_2023mar.onnx"
 elif MODE == "YOLO-PERSON":
     model_path = "yolo26n.pt"
+elif MODE == "YOLO-26S":
+    model_path = "yolo26s.pt"
+elif MODE == "RTDETR":
+    # https://huggingface.co/PekingU/rtdetr_v2_r18vd/tree/main << here
+    model_path = "rtdetr_v2_r18vd"
 
 MODEL_PATH = os.getenv("MODEL", model_path)
 
@@ -31,7 +37,7 @@ if IMGSZ <= 0:
 TARGET_BITRATE = os.getenv("OUT_BITRATE", "16M")
 
 # Direct environment variable loading with defaults
-if MODE == "YOLO-PERSON":
+if MODE in ["YOLO-PERSON", "RTDETR"]:
     CONF_THRESH = float(os.getenv("CONF_THRESH", "0.2"))
     BOX_MARGIN  = float(os.getenv("BOX_MARGIN", "0.001"))
     HEAD_RATIO  = float(os.getenv("HEAD_RATIO", "0.35"))
@@ -41,9 +47,7 @@ else:
     HEAD_RATIO  = float(os.getenv("HEAD_RATIO", "0.0"))
 
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-# os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-#     "rtsp_transport;tcp|hwaccel;cuda|video_codec;h264_cuvid|vsync;0"
-# )
+
 DEVICE = "cpu" 
 # Device verification
 if MODE == "YUNET":
@@ -68,7 +72,6 @@ print(
     f"Conf: {CONF_THRESH} | Margin: {BOX_MARGIN*100:.0f}% | HeadRatio: {HEAD_RATIO*100:.0f}%"
 )
 
-
 # 1. Threaded Video Capture (Synchronized with Condition to avoid duplicate frame processing)
 class FreshFrameReader:
     def __init__(self, src):
@@ -77,15 +80,6 @@ class FreshFrameReader:
             cv2.CAP_FFMPEG,
             [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000],
         )
-        # self.cap = cv2.VideoCapture(
-        #     src,
-        #     cv2.CAP_FFMPEG,
-        #     [
-        #         cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000,
-        #         cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000,
-        #         cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY,
-        #     ],
-        # )
         if not self.cap.isOpened():
             sys.exit(f"[-] Error: Unable to open RTSP input at {src}")
         ret, self.frame = self.cap.read()
@@ -187,6 +181,27 @@ if MODE in ["YOLO", "YOLO-PERSON"]:
     from ultralytics import YOLO
     print(f"[*] Loading YOLO model: {MODEL_PATH}")
     model = YOLO(MODEL_PATH)
+elif MODE == "RTDETR":
+    from transformers import RTDetrImageProcessor, RTDetrV2ForObjectDetection
+    print(f"[*] Loading RT-DETR v2 model from: {MODEL_PATH} with 2:1 size ({input_w}x{input_h})")
+    
+    torch_device = f"cuda:{DEVICE}" if isinstance(DEVICE, int) else DEVICE
+    
+    # OVERRIDE DEFAULT 640x640 SQUARE WITH 2:1 RECTANGLE:
+    image_processor = RTDetrImageProcessor.from_pretrained(
+        MODEL_PATH, 
+        local_files_only=True,
+        size={"height": input_h, "width": input_w}   # <--- HERE: forces 2:1 (e.g., 640x1280)
+    )
+    
+    model = RTDetrV2ForObjectDetection.from_pretrained(
+        MODEL_PATH, 
+        local_files_only=True
+    ).to(torch_device)
+    model.eval()
+
+    # Pre-allocate target sizes for post-processing back to full 2:1 camera frame
+    rtdetr_target_sizes = torch.tensor([[height, width]], device=torch_device)
 elif MODE == "YUNET":
     print(f"[*] Loading YuNet model: {MODEL_PATH}")
     backend = cv2.dnn.DNN_BACKEND_CUDA if DEVICE == "cuda" else cv2.dnn.DNN_BACKEND_OPENCV
@@ -326,7 +341,6 @@ try:
                 classes=[0],
                 device=DEVICE,
                 verbose=False,
-                vid_stride=2
             )
 
             if DEVICE != "cpu":
@@ -338,6 +352,29 @@ try:
                 raw_boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
                 last_boxes = [adjust_box(b) for b in raw_boxes]
 
+        elif MODE == "RTDETR":
+            if DEVICE != "cpu":
+                torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            # OpenCV is BGR; transformers processor expects RGB
+            rgb_frame = cv2.cvtColor(work_frame, cv2.COLOR_BGR2RGB)
+            inputs = image_processor(images=rgb_frame, return_tensors="pt").to(torch_device)
+            with torch.no_grad():
+                outputs = model(**inputs)
+            results = image_processor.post_process_object_detection(
+                outputs, 
+                target_sizes=rtdetr_target_sizes, 
+                threshold=CONF_THRESH
+            )[0]
+            if DEVICE != "cpu":
+                torch.cuda.synchronize()
+            t_infer_ms = (time.perf_counter() - t1) * 1000.0
+            last_boxes = []
+            # COCO Class 0 = "person"
+            for label_id, box in zip(results["labels"], results["boxes"]):
+                if label_id.item() == 0:
+                    raw_box = [int(v) for v in box.tolist()]
+                    last_boxes.append(adjust_box(raw_box))
         elif MODE == "YUNET":
             t1 = time.perf_counter()
             detector_frame = cv2.resize(work_frame, (input_w, input_h)) if scale < 1.0 else work_frame
@@ -361,7 +398,7 @@ try:
 
         # Step C: Apply pixelation using adjusted face bounding boxes
         t2 = time.perf_counter()
-        if MODE in {"YOLO", "YUNET", "YOLO-PERSON"}:
+        if MODE in {"YOLO", "YUNET", "YOLO-PERSON", "RTDETR"}:
             for box in last_boxes:
                 work_frame = apply_pixelate(work_frame, box)
         t_blur_ms = (time.perf_counter() - t2) * 1000.0
