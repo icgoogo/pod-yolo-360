@@ -1,5 +1,6 @@
 # Pre-packaged with Python 3.10 + PyTorch + CUDA 12.1
-FROM pytorch/pytorch:2.2.1-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+# FROM pytorch/pytorch:2.2.1-cuda12.1-cudnn8-runtime
 
 # Install minimal OS dependencies for OpenCV & FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
